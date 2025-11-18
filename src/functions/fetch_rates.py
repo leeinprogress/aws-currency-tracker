@@ -5,7 +5,7 @@ Uses storage abstraction to get active alerts
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, UTC
 import boto3
 
 # Add parent directory to path to import app modules
@@ -71,7 +71,7 @@ async def fetch_rates_async():
                 'Detail': json.dumps({
                     'base_currency': base_currency,
                     'rates': rates_by_currency,  # {currency_code: {TTS, TTB, DEAL_BAS_R, ...}}
-                    'timestamp': datetime.utcnow().isoformat()
+                    'timestamp': datetime.now(UTC).isoformat()
                 }),
                 'EventBusName': EVENTBRIDGE_BUS
             }]

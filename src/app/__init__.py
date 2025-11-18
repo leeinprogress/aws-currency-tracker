@@ -1,0 +1,4 @@
+"""
+Currency Alert API Application
+"""
+

@@ -3,7 +3,7 @@ User Pydantic schemas
 """
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class UserCreate(BaseModel):
@@ -28,8 +28,7 @@ class UserResponse(BaseModel):
     created_at: Optional[datetime] = Field(None, description="User creation timestamp")
     updated_at: Optional[datetime] = Field(None, description="User last update timestamp")
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TokenResponse(BaseModel):

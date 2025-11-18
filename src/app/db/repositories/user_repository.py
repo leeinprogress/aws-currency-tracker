@@ -82,7 +82,7 @@ class DynamoDBUserRepository(UserRepository):
 
         update_expression_parts.append("#updated_at = :updated_at")
         expression_attribute_names["#updated_at"] = "updated_at"
-        expression_attribute_values[":updated_at"] = datetime.utcnow().isoformat()
+        expression_attribute_values[":updated_at"] = datetime.now(UTC).isoformat()
 
         update_expression = "SET " + ", ".join(update_expression_parts)
 

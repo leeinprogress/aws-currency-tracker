@@ -3,7 +3,7 @@ Alert Pydantic schemas for request/response validation
 """
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AlertBase(BaseModel):
@@ -135,8 +135,7 @@ class AlertResponse(AlertBase):
     created_at: Optional[datetime] = Field(None, description="Alert creation timestamp")
     updated_at: Optional[datetime] = Field(None, description="Alert last update timestamp")
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AlertListResponse(BaseModel):
