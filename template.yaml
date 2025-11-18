@@ -1,0 +1,182 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Currency Tracking and Alert System with Telegram Notifications
+
+Parameters:
+  TelegramBotToken:
+    Type: String
+    Description: Telegram Bot Token
+    NoEcho: true
+  KoreaEximAuthkey:
+    Type: String
+    Description: KoreaExim Exchange Rate API authentication key (authkey)
+    NoEcho: true
+  ExchangeApiKey:
+    Type: String
+    Description: Exchange Rate API Key (legacy, optional)
+    Default: ''
+    NoEcho: true
+  SecretKey:
+    Type: String
+    Description: Secret key for JWT token signing (generate a strong random string)
+    NoEcho: true
+    Default: 'change-this-secret-key-in-production'
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: python3.11
+    Environment:
+      Variables:
+        ALERTS_TABLE_NAME: !Ref AlertsTable
+        EVENTBRIDGE_BUS: currency-events
+        TELEGRAM_BOT_TOKEN: !Ref TelegramBotToken
+        KOREAEXIM_AUTHKEY: !Ref KoreaEximAuthkey
+        EXCHANGE_API_KEY: !Ref ExchangeApiKey
+        EXCHANGE_API_URL: https://api.exchangerate-api.com/v4/latest/
+        USERS_TABLE_NAME: !Ref UsersTable
+        SECRET_KEY: !Ref SecretKey
+        ACCESS_TOKEN_EXPIRE_MINUTES: 30
+
+Resources:
+  # DynamoDB Table for storing alerts
+  AlertsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: currency-alerts
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: alert_id
+          AttributeType: S
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: base_currency
+          AttributeType: S
+      KeySchema:
+        - AttributeName: alert_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: user_id-index
+          KeySchema:
+            - AttributeName: user_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: base_currency-index
+          KeySchema:
+            - AttributeName: base_currency
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  # DynamoDB Table for storing users
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: users
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: email-index
+          KeySchema:
+            - AttributeName: email
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  # API Gateway + FastAPI Lambda
+  CurrencyApi:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.main.handler
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+        RootEvent:
+          Type: Api
+          Properties:
+            Path: /
+            Method: ANY
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AlertsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UsersTable
+
+  # Lambda to fetch currency rates
+  FetchRatesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/functions/
+      Handler: fetch_rates.lambda_handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref AlertsTable
+        - EventBridgePutEventsPolicy:
+            EventBusName: !Ref CurrencyEventBus
+      Events:
+        ScheduledEvent:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)  # Check every 5 minutes
+            Enabled: true
+
+  # EventBridge Rule for rate updates
+  RateUpdateRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventBusName: !Ref CurrencyEventBus
+      EventPattern:
+        source:
+          - currency.tracker
+        detail-type:
+          - Rate Updated
+      Targets:
+        - Arn: !GetAtt CheckAlertsFunction.Arn
+          Id: CheckAlertsTarget
+
+  # Lambda to check alerts and send notifications
+  CheckAlertsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/functions/
+      Handler: check_alerts.lambda_handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AlertsTable
+      Events: {}  # EventBridge rule is defined separately above
+
+  # EventBridge Custom Bus
+  CurrencyEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: currency-events
+
+  # Permission for EventBridge to invoke CheckAlertsFunction
+  CheckAlertsInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CheckAlertsFunction
+      Principal: events.amazonaws.com
+      Action: lambda:InvokeFunction
+      SourceArn: !GetAtt RateUpdateRule.Arn
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/'
+  AlertsTableName:
+    Description: DynamoDB Table name
+    Value: !Ref AlertsTable
+
