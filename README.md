@@ -14,7 +14,7 @@ I put this project together out of curiosity and a desire to deepen my grasp of 
 - **AWS Services**: Lambda, API Gateway, EventBridge Scheduler + Bus, DynamoDB, IAM
 - **Infrastructure as Code**: AWS SAM (`template.yaml`)
 - **Messaging & Integrations**: Telegram Bot API, public exchange-rate providers
-- **Tooling**: pip-based workflow, ready for `ruff` + `pytest` + CI (to be added in upcoming commits)
+- **Tooling**: `ruff` for linting, `pytest` with `moto` for AWS mocking, GitHub Actions for CI/CD
 
 ## Architecture
 
@@ -72,6 +72,27 @@ pip install -r requirements.txt
 cp .env.example .env  # fill in API keys + Telegram token
 ```
 
+## Testing
+
+The project includes comprehensive tests using `pytest` and `moto` for mocking AWS services:
+
+```bash
+# Run all tests
+pytest
+
+# Run with verbose output
+pytest -v
+
+# Run specific test file
+pytest tests/test_repositories.py
+```
+
+Tests cover:
+- Repository layer with DynamoDB operations
+- Lambda functions (rate fetching and alert checking)
+- API endpoints with authentication
+- AWS service mocking for cost-free local testing
+
 ## Deployment (SAM)
 
 ```bash
@@ -81,11 +102,22 @@ sam deploy --guided
 
 SAM will prompt for all runtime secrets and provision the full stack (API Gateway, Lambdas, DynamoDB tables, EventBridge resources).
 
-## Roadmap
+## CI/CD
 
-- **Next commits**: 
-  - Comprehensive pytest suite with moto-powered AWS mocks.
-  - GitHub Actions workflow for lint → test gates.
-  - Documentation bundle (architecture notes, troubleshooting, runbook).
+This project uses GitHub Actions for continuous integration. The workflow automatically:
+- Runs tests on Python 3.11 and 3.12
+- Lints code with `ruff`
+- Executes the full test suite on every push and pull request
+
+See `.github/workflows/ci.yml` for the complete pipeline configuration.
+
+## Documentation
+
+Additional documentation is available in the `DOCS/` directory:
+- `ARCHITECTURE.md` - System architecture and design decisions
+- `QUICKSTART.md` - Detailed deployment and usage guide
+- `AUTHENTICATION.md` - Authentication flow and API usage
+
+---
 
 Feedback and suggestions are welcome—this project is my playground for trying new cloud patterns, and I plan to keep iterating.
