@@ -3,7 +3,7 @@ import os
 import pytest
 import boto3
 from moto import mock_aws
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 def pytest_configure(config):
