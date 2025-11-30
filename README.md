@@ -20,34 +20,6 @@ I put this project together out of curiosity and a desire to deepen my grasp of 
 
 The platform follows a "thin API, rich event pipeline" model. FastAPI focuses on CRUD + authentication, while background Lambdas handle periodic rate ingestion and alert fan-out through EventBridge. DynamoDB provides low-latency persistence for both alerts and user metadata.
 
-```mermaid
-graph TD
-    subgraph "API Layer"
-        A[API Gateway] --> B{FastAPI on Lambda};
-    end
-
-    subgraph "Data Layer"
-        C[DynamoDB Table: Alerts];
-        D[DynamoDB Table: Users];
-    end
-
-    subgraph "Asynchronous Processing"
-        E[EventBridge Scheduler] -- "Triggers every 5 mins" --> F[FetchRates Lambda];
-        F -- "Publishes rates" --> G[EventBridge Bus];
-        G -- "Routes rate updates" --> H[CheckAlerts Lambda];
-    end
-    
-    subgraph "External Services"
-        I[Telegram API];
-        J[Exchange Rate API];
-    end
-
-    B <--> C;
-    B <--> D;
-    F --> J;
-    H --> C;
-    H --> I;
-```
 
 ## Core Features
 
