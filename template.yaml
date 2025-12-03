@@ -119,8 +119,8 @@ Resources:
   FetchRatesFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: src/functions/
-      Handler: fetch_rates.lambda_handler
+      CodeUri: src/
+      Handler: functions.fetch_rates.lambda_handler
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref AlertsTable
@@ -151,8 +151,8 @@ Resources:
   CheckAlertsFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: src/functions/
-      Handler: check_alerts.lambda_handler
+      CodeUri: src/
+      Handler: functions.check_alerts.lambda_handler
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref AlertsTable

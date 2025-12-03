@@ -6,6 +6,7 @@ import json
 import os
 import sys
 from telegram import Bot
+from telegram.request import HTTPXRequest
 
 # Add parent directory to path to import app modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -15,7 +16,19 @@ from app.db.repositories import get_alert_repository
 # Environment variables
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 
-bot = Bot(token=TELEGRAM_BOT_TOKEN) if TELEGRAM_BOT_TOKEN else None
+def get_telegram_bot():
+    """Create a new Telegram bot instance for each use"""
+    if not TELEGRAM_BOT_TOKEN:
+        return None
+    # Use HTTPXRequest with connection pool settings for Lambda
+    request = HTTPXRequest(
+        connection_pool_size=1,
+        read_timeout=5.0,
+        write_timeout=5.0,
+        connect_timeout=5.0,
+        pool_timeout=5.0
+    )
+    return Bot(token=TELEGRAM_BOT_TOKEN, request=request)
 
 
 async def check_alerts_async(event):
@@ -58,6 +71,9 @@ async def check_alerts_async(event):
     repository = get_alert_repository()
     alerts = await repository.get_active_alerts_by_base_currency(base_currency)
     
+    print(f"Found {len(alerts)} active alerts for base currency {base_currency}")
+    print(f"Rates available for currencies: {list(rates.keys())[:10]}...")  # Log first 10 currencies
+    
     triggered_alerts = []
     
     for alert in alerts:
@@ -67,12 +83,17 @@ async def check_alerts_async(event):
         rate_type = alert.rate_type.upper()  # TTS, TTB, or DEAL_BAS_R
         telegram_chat_id = alert.telegram_chat_id
         
+        print(f"Processing alert: {alert.alert_id}")
+        print(f"  Target currency: {target_currency}, Target rate: {target_rate}, Condition: {condition}, Rate type: {rate_type}")
+        
         # Get current rate for target currency
         currency_data = rates.get(target_currency)
         
         if currency_data is None:
-            print(f"Currency {target_currency} not found in rates")
+            print(f"Currency {target_currency} not found in rates. Available currencies: {list(rates.keys())}")
             continue
+        
+        print(f"  Found currency data for {target_currency}: {currency_data}")
         
         # KoreaExim API response format: {currency_code: {TTS, TTB, DEAL_BAS_R, ...}}
         if isinstance(currency_data, dict):
@@ -90,11 +111,17 @@ async def check_alerts_async(event):
         
         should_alert = False
         
+        print(f"  Current rate ({rate_type}): {current_rate}, Target: {target_rate}, Condition: {condition}")
+        
         # Check condition
         if condition == 'above' and current_rate >= target_rate:
             should_alert = True
+            print(f"  ✅ Condition met: {current_rate} >= {target_rate}")
         elif condition == 'below' and current_rate <= target_rate:
             should_alert = True
+            print(f"  ✅ Condition met: {current_rate} <= {target_rate}")
+        else:
+            print(f"  ❌ Condition not met: {current_rate} {condition} {target_rate}")
         
         if should_alert:
             # Send Telegram notification
@@ -107,16 +134,29 @@ async def check_alerts_async(event):
             )
             
             try:
+                bot = get_telegram_bot()
                 if bot:
-                    bot.send_message(
+                    # Use async method for sending messages
+                    await bot.send_message(
                         chat_id=telegram_chat_id,
                         text=message
                     )
+                    # Close the bot connection properly
+                    await bot.close()
                     triggered_alerts.append(alert.alert_id)
+                    print(f"Successfully sent alert to chat {telegram_chat_id} for alert {alert.alert_id}")
                 else:
                     print(f"Telegram bot not configured. Would send: {message}")
             except Exception as e:
-                print(f"Error sending Telegram message: {str(e)}")
+                print(f"Error sending Telegram message to chat {telegram_chat_id}: {str(e)}")
+                # Try to close bot if it exists
+                try:
+                    bot = get_telegram_bot()
+                    if bot:
+                        await bot.close()
+                except:
+                    pass
+                # Don't fail the entire function if one message fails
     
     return {
         'statusCode': 200,
