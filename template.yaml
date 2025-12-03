@@ -25,7 +25,7 @@ Parameters:
 Globals:
   Function:
     Timeout: 30
-    Runtime: python3.11
+    Runtime: python3.12
     Environment:
       Variables:
         ALERTS_TABLE_NAME: !Ref AlertsTable
@@ -95,6 +95,7 @@ Resources:
   CurrencyApi:
     Type: AWS::Serverless::Function
     Properties:
+      Description: Handles all API requests for the currency alert system.
       CodeUri: src/
       Handler: app.main.handler
       Events:
