@@ -28,19 +28,34 @@ async def fetch_rates_async():
     # Get all active alerts
     alerts = await repository.list_alerts(is_active=True)
     
-    if not alerts:
-        return {
-            'statusCode': 200,
-            'body': json.dumps({'message': 'No active alerts to process'})
-        }
+    # if not alerts:
+    #     return {
+    #         'statusCode': 200,
+    #         'body': json.dumps({'message': 'No active alerts to process'})
+    #     }
     
     try:
         # Initialize KoreaExim API client
         client = KoreaEximExchangeRateClient(authkey=KOREAEXIM_AUTHKEY)
         
-        # Fetch rates for today
+        # Fetch rates - try today first, then yesterday if today fails
+        # KoreaExim API may not have rates for today if it's too early or weekend
+        from datetime import timedelta
         today = datetime.now().strftime("%Y%m%d")
-        exchange_rates = client.fetch_rates(searchdate=today, data="AP01")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+        
+        print(f"Attempting to fetch rates for date: {today}")
+        exchange_rates = None
+        try:
+            exchange_rates = client.fetch_rates(searchdate=today, data="AP01")
+        except Exception as e:
+            print(f"Failed to fetch rates for {today}: {str(e)}")
+            print(f"Trying yesterday's date: {yesterday}")
+            try:
+                exchange_rates = client.fetch_rates(searchdate=yesterday, data="AP01")
+            except Exception as e2:
+                print(f"Failed to fetch rates for {yesterday}: {str(e2)}")
+                raise e  # Raise original error
         
         if not exchange_rates:
             return {

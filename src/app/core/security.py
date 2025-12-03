@@ -7,7 +7,6 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from app.core.config import settings
 
-# Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # JWT settings
@@ -16,15 +15,32 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
 
 
+def _prepare_password_for_bcrypt(password: str) -> str:
+    """    
+    Args:
+        password: The password to prepare.
+        
+    Returns:
+        The prepared password (truncated to 72 bytes if necessary).
+    """
+    password_bytes = password.encode('utf-8')
+    if len(password_bytes) > 72:
+        # Truncate to 72 bytes (bcrypt's limit)
+        # Decode back to string for passlib
+        return password_bytes[:72].decode('utf-8', errors='ignore')
+    return password
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against a hash"""
-    return pwd_context.verify(plain_password, hashed_password)
+    prepared_password = _prepare_password_for_bcrypt(plain_password)
+    return pwd_context.verify(prepared_password, hashed_password)
 
 
 def get_password_hash(password: str) -> str:
     """Hash a password"""
-    return pwd_context.hash(password)
-
+    prepared_password = _prepare_password_for_bcrypt(password)
+    return pwd_context.hash(prepared_password)
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Create a JWT access token"""

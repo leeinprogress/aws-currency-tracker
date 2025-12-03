@@ -3,6 +3,7 @@ Korea Export-Import Bank (KoreaExim) Exchange Rate API Client
 """
 import os
 import requests
+import certifi
 from datetime import datetime
 from typing import List, Dict, Optional
 from dataclasses import dataclass
@@ -21,7 +22,7 @@ class ExchangeRate:
 class KoreaEximExchangeRateClient:
     """Korea Export-Import Bank Exchange Rate API Client"""
     
-    BASE_URL = "https://www.koreaexim.go.kr/ir/HPHKIR020M01"
+    BASE_URL = "https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON"
     
     def __init__(self, authkey: Optional[str] = None):
         """
@@ -52,19 +53,45 @@ class KoreaEximExchangeRateClient:
             searchdate = datetime.now().strftime("%Y%m%d")
         
         params = {
-            "apino": 2,
-            "viewtype": "C",
             "authkey": self.authkey,
             "searchdate": searchdate,
             "data": data
         }
         
         try:
-            response = requests.get(self.BASE_URL, params=params, timeout=10)
+            # Lambda environment may have SSL certificate issues
+            # Try with certifi first, fallback to system certificates
+            try:
+                response = requests.get(self.BASE_URL, params=params, timeout=10, verify=certifi.where())
+            except Exception:
+                # Fallback: use system default SSL verification
+                # If that fails, disable verification (not ideal but works in Lambda)
+                try:
+                    response = requests.get(self.BASE_URL, params=params, timeout=10, verify=True)
+                except Exception:
+                    print("Warning: SSL verification disabled due to certificate issues")
+                    response = requests.get(self.BASE_URL, params=params, timeout=10, verify=False)
             response.raise_for_status()
             
+            # Log response status and content type for debugging
+            print(f"API Response Status: {response.status_code}")
+            print(f"API Response Content-Type: {response.headers.get('Content-Type', 'unknown')}")
+            print(f"API Response Length: {len(response.content)} bytes")
+            
+            # Check if response is empty
+            if not response.content or len(response.content.strip()) == 0:
+                raise ValueError("API returned empty response")
+            
+            # Try to parse JSON, but log raw response if it fails
+            try:
+                data_list = response.json()
+            except ValueError as json_error:
+                # Log first 500 chars of response for debugging
+                response_preview = response.text[:500] if response.text else "No text content"
+                print(f"Failed to parse JSON. Response preview: {response_preview}")
+                raise ValueError(f"Invalid JSON response from API: {str(json_error)}")
+            
             # API response is in JSON array format
-            data_list = response.json()
             
             if not isinstance(data_list, list):
                 raise ValueError(f"Unexpected API response format: {type(data_list)}")
@@ -72,13 +99,21 @@ class KoreaEximExchangeRateClient:
             rates = []
             for item in data_list:
                 try:
-                    # Parse only required fields
+                    # Skip items with result != 1 (error or invalid entries)
+                    if item.get("result") != 1:
+                        continue
+                    
+                    # API returns lowercase field names: cur_unit, ttb, tts, deal_bas_r, cur_nm
+                    cur_unit = item.get("cur_unit", "").strip()
+                    if not cur_unit:
+                        continue
+                    
                     rate = ExchangeRate(
-                        cur_unit=item.get("CUR_UNIT", "").strip(),
-                        cur_nm=item.get("CUR_NM", "").strip(),
-                        ttb=self._parse_rate(item.get("TTB", "")),
-                        tts=self._parse_rate(item.get("TTS", "")),
-                        deal_bas_r=self._parse_rate(item.get("DEAL_BAS_R", ""))
+                        cur_unit=cur_unit,
+                        cur_nm=item.get("cur_nm", "").strip(),
+                        ttb=self._parse_rate(item.get("ttb", "")),
+                        tts=self._parse_rate(item.get("tts", "")),
+                        deal_bas_r=self._parse_rate(item.get("deal_bas_r", ""))
                     )
                     rates.append(rate)
                 except (ValueError, KeyError) as e:

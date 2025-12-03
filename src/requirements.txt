@@ -4,6 +4,7 @@ pydantic==2.5.0
 pydantic-settings==2.1.0
 pydantic[email]==2.5.0
 requests==2.31.0
+certifi
 boto3==1.29.7
 python-telegram-bot==20.7
 python-jose[cryptography]==3.3.0

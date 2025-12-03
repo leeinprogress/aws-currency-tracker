@@ -44,6 +44,27 @@ pip install -r requirements.txt
 cp .env.example .env  # fill in API keys + Telegram token
 ```
 
+## Telegram Bot Setup
+
+To receive currency alerts via Telegram, you need to create a bot and get your chat ID:
+
+1. **Create a Telegram Bot**
+   - Open Telegram and search for [@BotFather](https://t.me/BotFather)
+   - Send `/newbot` and follow the instructions
+   - Copy the bot token (format: `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
+
+2. **Get Your Chat ID**
+   - Start a chat with your bot (search for your bot's username)
+   - Send any message (e.g., `/start`)
+   - Visit: `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`
+   - Find `"chat":{"id":123456789}` in the response and copy that number
+
+3. **Use the Bot Token and Chat ID**
+   - When deploying with `sam deploy --guided`, provide the bot token as `TelegramBotToken`
+   - When registering a user via API, include your chat ID in the `telegram_chat_id` field
+
+**Note**: For local testing without Telegram, you can run `pytest` - the bot will be mocked. For actual notifications, you need a real bot token.
+
 ## Testing
 
 The project includes comprehensive tests using `pytest` and `moto` for mocking AWS services:
