@@ -130,7 +130,7 @@ Resources:
         ScheduledEvent:
           Type: Schedule
           Properties:
-            Schedule: rate(5 minutes)  # Check every 5 minutes
+            Schedule: rate(6 hours)  # Check every 6 hours
             Enabled: true
 
   # EventBridge Rule for rate updates
