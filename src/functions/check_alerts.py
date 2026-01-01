@@ -154,7 +154,7 @@ async def check_alerts_async(event):
                     bot = get_telegram_bot()
                     if bot:
                         await bot.close()
-                except:
+                except Exception:
                     pass
                 # Don't fail the entire function if one message fails
     

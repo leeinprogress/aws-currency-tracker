@@ -11,7 +11,6 @@ import boto3
 # Add parent directory to path to import app modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.db.repositories import get_alert_repository
 from app.clients.exchange_rate_client import KoreaEximExchangeRateClient
 
 # Environment variables
@@ -23,16 +22,6 @@ eventbridge = boto3.client('events')
 
 async def fetch_rates_async():
     """Async function to fetch rates from KoreaExim API"""
-    repository = get_alert_repository()
-    
-    # Get all active alerts
-    alerts = await repository.list_alerts(is_active=True)
-    
-    # if not alerts:
-    #     return {
-    #         'statusCode': 200,
-    #         'body': json.dumps({'message': 'No active alerts to process'})
-    #     }
     
     try:
         # Initialize KoreaExim API client
