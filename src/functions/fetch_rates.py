@@ -23,16 +23,6 @@ eventbridge = boto3.client('events')
 
 async def fetch_rates_async():
     """Async function to fetch rates from KoreaExim API"""
-    repository = get_alert_repository()
-    
-    # Get all active alerts
-    alerts = await repository.list_alerts(is_active=True)
-    
-    # if not alerts:
-    #     return {
-    #         'statusCode': 200,
-    #         'body': json.dumps({'message': 'No active alerts to process'})
-    #     }
     
     try:
         # Initialize KoreaExim API client
