@@ -11,7 +11,6 @@ import boto3
 # Add parent directory to path to import app modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.db.repositories import get_alert_repository
 from app.clients.exchange_rate_client import KoreaEximExchangeRateClient
 
 # Environment variables
