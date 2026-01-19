@@ -15,9 +15,11 @@ pytestmark = pytest.mark.asyncio
 @pytest.fixture
 def mock_telegram_bot():
     """Fixture to mock the telegram bot."""
-    with patch('functions.check_alerts.bot', new_callable=MagicMock) as mock_bot:
-        # Make sure the bot object itself is truthy
-        mock_bot.send_message = MagicMock()
+    mock_bot = AsyncMock()
+    # Make sure the bot object itself is truthy
+    mock_bot.send_message = AsyncMock()
+    mock_bot.close = AsyncMock()
+    with patch('functions.check_alerts.get_telegram_bot', return_value=mock_bot):
         yield mock_bot
 
 async def test_check_alerts_handler_triggers_one_alert(alerts_table, mock_telegram_bot):
@@ -145,21 +147,29 @@ async def test_fetch_rates_no_active_alerts(
     mock_exchange_rate_client,
     mock_eventbridge,
 ):
-    """Test fetch_rates when there are no active alerts."""
-    # Setup: No active alerts
-    mock_alert_repository.list_alerts.return_value = []
+    """Test fetch_rates when there are no active alerts (still fetches rates)."""
+    # Setup: Mock exchange rate data
+    exchange_rates = [
+        ExchangeRate(
+            cur_unit="USD",
+            cur_nm="US Dollar",
+            ttb=1290.0,
+            tts=1350.0,
+            deal_bas_r=1320.0,
+        ),
+    ]
+    mock_exchange_rate_client.fetch_rates.return_value = exchange_rates
     
-    with patch('functions.fetch_rates.get_alert_repository', return_value=mock_alert_repository):
-        response = await fetch_rates_async()
+    response = await fetch_rates_async()
     
-    # Assertions
+    # Assertions - should still fetch rates even without active alerts
     assert response["statusCode"] == 200
     body = json.loads(response["body"])
-    assert body["message"] == "No active alerts to process"
+    assert body["message"] == "Fetched rates for 1 currencies"
     
-    # Should not call exchange rate client or EventBridge
-    mock_exchange_rate_client.fetch_rates.assert_not_called()
-    mock_eventbridge.put_events.assert_not_called()
+    # Should call exchange rate client and EventBridge
+    mock_exchange_rate_client.fetch_rates.assert_called()
+    mock_eventbridge.put_events.assert_called_once()
 
 
 async def test_fetch_rates_no_exchange_rates(
@@ -168,23 +178,10 @@ async def test_fetch_rates_no_exchange_rates(
     mock_eventbridge,
 ):
     """Test fetch_rates when exchange rate API returns no data."""
-    # Setup: Active alerts exist but no exchange rates
-    active_alert = Alert(
-        alert_id=str(uuid.uuid4()),
-        user_id="user-123",
-        telegram_chat_id="chat-123",
-        base_currency="KRW",
-        target_currency="USD",
-        target_rate=1300.0,
-        condition="above",
-        rate_type="TTS",
-        is_active=True,
-    )
-    mock_alert_repository.list_alerts.return_value = [active_alert]
+    # Setup: No exchange rates
     mock_exchange_rate_client.fetch_rates.return_value = []
     
-    with patch('functions.fetch_rates.get_alert_repository', return_value=mock_alert_repository):
-        response = await fetch_rates_async()
+    response = await fetch_rates_async()
     
     # Assertions
     assert response["statusCode"] == 200
@@ -192,7 +189,7 @@ async def test_fetch_rates_no_exchange_rates(
     assert body["message"] == "No exchange rates available"
     
     # Should call exchange rate client but not EventBridge
-    mock_exchange_rate_client.fetch_rates.assert_called_once()
+    mock_exchange_rate_client.fetch_rates.assert_called()
     mock_eventbridge.put_events.assert_not_called()
 
 
@@ -202,21 +199,7 @@ async def test_fetch_rates_success(
     mock_eventbridge,
 ):
     """Test successful fetch_rates that publishes to EventBridge."""
-    # Setup: Active alerts and exchange rates
-    active_alert = Alert(
-        alert_id=str(uuid.uuid4()),
-        user_id="user-123",
-        telegram_chat_id="chat-123",
-        base_currency="KRW",
-        target_currency="USD",
-        target_rate=1300.0,
-        condition="above",
-        rate_type="TTS",
-        is_active=True,
-    )
-    mock_alert_repository.list_alerts.return_value = [active_alert]
-    
-    # Mock exchange rate data
+    # Setup: Mock exchange rate data
     exchange_rates = [
         ExchangeRate(
             cur_unit="USD",
@@ -235,8 +218,7 @@ async def test_fetch_rates_success(
     ]
     mock_exchange_rate_client.fetch_rates.return_value = exchange_rates
     
-    with patch('functions.fetch_rates.get_alert_repository', return_value=mock_alert_repository):
-        response = await fetch_rates_async()
+    response = await fetch_rates_async()
     
     # Assertions
     assert response["statusCode"] == 200
@@ -272,25 +254,10 @@ async def test_fetch_rates_api_error(
     mock_eventbridge,
 ):
     """Test fetch_rates when exchange rate API raises an error."""
-    # Setup: Active alerts exist
-    active_alert = Alert(
-        alert_id=str(uuid.uuid4()),
-        user_id="user-123",
-        telegram_chat_id="chat-123",
-        base_currency="KRW",
-        target_currency="USD",
-        target_rate=1300.0,
-        condition="above",
-        rate_type="TTS",
-        is_active=True,
-    )
-    mock_alert_repository.list_alerts.return_value = [active_alert]
-    
-    # Mock API error
+    # Setup: Mock API error
     mock_exchange_rate_client.fetch_rates.side_effect = Exception("API connection failed")
     
-    with patch('functions.fetch_rates.get_alert_repository', return_value=mock_alert_repository):
-        response = await fetch_rates_async()
+    response = await fetch_rates_async()
     
     # Assertions
     assert response["statusCode"] == 500
@@ -308,20 +275,7 @@ async def test_fetch_rates_eventbridge_error(
     mock_eventbridge,
 ):
     """Test fetch_rates when EventBridge put_events fails."""
-    # Setup: Active alerts and exchange rates
-    active_alert = Alert(
-        alert_id=str(uuid.uuid4()),
-        user_id="user-123",
-        telegram_chat_id="chat-123",
-        base_currency="KRW",
-        target_currency="USD",
-        target_rate=1300.0,
-        condition="above",
-        rate_type="TTS",
-        is_active=True,
-    )
-    mock_alert_repository.list_alerts.return_value = [active_alert]
-    
+    # Setup: Mock exchange rates
     exchange_rates = [
         ExchangeRate(
             cur_unit="USD",
@@ -336,8 +290,7 @@ async def test_fetch_rates_eventbridge_error(
     # Mock EventBridge error
     mock_eventbridge.put_events.side_effect = Exception("EventBridge error")
     
-    with patch('functions.fetch_rates.get_alert_repository', return_value=mock_alert_repository):
-        response = await fetch_rates_async()
+    response = await fetch_rates_async()
     
     # Assertions
     assert response["statusCode"] == 500
