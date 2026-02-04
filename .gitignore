@@ -28,4 +28,7 @@ Thumbs.db
 .env.local
 
 # Documentation
-DOCS/
+template_exp.yaml
+etc_personal/
+CLAUDE.md
+claude-code-prompt.md

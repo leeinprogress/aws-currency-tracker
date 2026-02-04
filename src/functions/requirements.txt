@@ -4,16 +4,13 @@ pydantic==2.5.0
 pydantic-settings==2.1.0
 pydantic[email]==2.5.0
 requests==2.31.0
-httpx>=0.25.0
+certifi
 boto3==1.29.7
 python-telegram-bot==20.7
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 bcrypt==3.2.0
 python-multipart==0.0.6
-structlog==24.1.0
-slowapi>=0.1.9
-authlib>=1.2.0
 pytest
 pytest-asyncio
 moto[dynamodb]
