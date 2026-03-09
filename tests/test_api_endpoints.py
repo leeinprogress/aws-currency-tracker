@@ -9,15 +9,13 @@ from app.main import app
 from app.api.v1.alerts import get_alert_service
 from app.api.v1.auth import get_user_service
 from app.core.dependencies import get_current_user
-from app.db.models.alert import Alert
-from app.db.models.user import User
+from app.domain.entities.alert import Alert
+from app.domain.entities.user import User
 from app.schemas.alert import AlertCreate, AlertUpdate
 from app.schemas.user import UserCreate
 
 
 class FakeAlertService:
-    """Simple in-memory alert service used for FastAPI endpoint tests."""
-
     def __init__(self):
         self.alerts: Dict[str, Alert] = {}
 
@@ -30,7 +28,6 @@ class FakeAlertService:
             alert_id=str(uuid.uuid4()),
             user_id=alert_data.user_id or "",
             telegram_chat_id=alert_data.telegram_chat_id or "",
-            base_currency=alert_data.base_currency,
             target_currency=alert_data.target_currency,
             target_rate=alert_data.target_rate,
             condition=alert_data.condition,
@@ -80,11 +77,9 @@ class FakeAlertService:
 
 
 class FakeUserService:
-    """Simple in-memory user service used for FastAPI auth endpoint tests."""
-
     def __init__(self):
         self.users: Dict[str, User] = {}
-        self.emails: Dict[str, str] = {}  # email -> user_id mapping
+        self.emails: Dict[str, str] = {}
 
     def add_user(self, user: User) -> User:
         self.users[user.user_id] = user
@@ -92,7 +87,6 @@ class FakeUserService:
         return user
 
     async def create_user(self, user_data: UserCreate) -> User:
-        # Check if user already exists
         if user_data.email.lower() in self.emails:
             raise ValueError("User with this email already exists")
 
@@ -100,7 +94,7 @@ class FakeUserService:
             user_id=str(uuid.uuid4()),
             email=user_data.email,
             telegram_chat_id=user_data.telegram_chat_id,
-            hashed_password=f"hashed_{user_data.password}",  # Simplified for testing
+            hashed_password=f"hashed_{user_data.password}",
             is_active=True,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
@@ -115,7 +109,6 @@ class FakeUserService:
         user = self.users.get(user_id)
         if not user:
             return None
-        # Simplified password check for testing
         if user.hashed_password != f"hashed_{password}":
             return None
         if not user.is_active:
@@ -124,6 +117,15 @@ class FakeUserService:
 
     async def get_user_by_id(self, user_id: str) -> Optional[User]:
         return self.users.get(user_id)
+
+    async def set_refresh_token(self, user_id: str, refresh_token: str) -> None:
+        pass  # no-op in tests
+
+    async def clear_refresh_token(self, user_id: str) -> None:
+        pass
+
+    async def count_alerts(self, user_id: str) -> int:
+        return 0
 
 
 @pytest.fixture
@@ -170,12 +172,15 @@ def test_create_alert_returns_created_alert(api_client: TestClient):
         "rate_type": "TTS",
     }
 
-    response = api_client.post("/api/v1/alerts", json=payload)
+    response = api_client.post(
+        "/api/v1/alerts",
+        json=payload,
+        headers={"Idempotency-Key": "test-idem-key-001"},
+    )
 
     assert response.status_code == 201
     body = response.json()
     assert body["user_id"] == "user-123"
-    assert body["base_currency"] == "KRW"
     assert body["target_currency"] == "USD"
     assert body["condition"] == "above"
     assert "alert_id" in body
@@ -190,7 +195,6 @@ def test_list_alerts_filters_by_active_flag(
         alert_id="alert-active",
         user_id=test_user.user_id,
         telegram_chat_id=test_user.telegram_chat_id,
-        base_currency="KRW",
         target_currency="USD",
         target_rate=1200.0,
         condition="above",
@@ -201,7 +205,6 @@ def test_list_alerts_filters_by_active_flag(
         alert_id="alert-inactive",
         user_id=test_user.user_id,
         telegram_chat_id=test_user.telegram_chat_id,
-        base_currency="KRW",
         target_currency="EUR",
         target_rate=1400.0,
         condition="below",
@@ -229,7 +232,6 @@ def test_get_alert_forbidden_for_other_user(
         alert_id="alert-other-user",
         user_id="different-user",
         telegram_chat_id="chat-other",
-        base_currency="KRW",
         target_currency="JPY",
         target_rate=900.0,
         condition="below",
@@ -244,11 +246,8 @@ def test_get_alert_forbidden_for_other_user(
     assert response.json()["detail"] == "Not authorized to access this alert"
 
 
-# ==================== Auth Endpoint Tests ====================
-
 @pytest.fixture
 def auth_client(fake_user_service: FakeUserService):
-    """Client for auth endpoints without authentication requirement."""
     app.dependency_overrides[get_user_service] = lambda: fake_user_service
 
     client = TestClient(app)
@@ -260,7 +259,6 @@ def auth_client(fake_user_service: FakeUserService):
 
 
 def test_register_user_success(auth_client: TestClient):
-    """Test successful user registration."""
     payload = {
         "email": "newuser@example.com",
         "password": "securepass123",
@@ -275,11 +273,10 @@ def test_register_user_success(auth_client: TestClient):
     assert body["telegram_chat_id"] == "chat-456"
     assert body["is_active"] is True
     assert "user_id" in body
-    assert "password" not in body  # Password should not be in response
+    assert "password" not in body
 
 
 def test_register_user_duplicate_email(auth_client: TestClient, fake_user_service: FakeUserService):
-    """Test registration with duplicate email returns 400."""
     existing_user = User(
         user_id="existing-123",
         email="existing@example.com",
@@ -302,7 +299,6 @@ def test_register_user_duplicate_email(auth_client: TestClient, fake_user_servic
 
 
 def test_register_user_invalid_email(auth_client: TestClient):
-    """Test registration with invalid email format returns 422."""
     payload = {
         "email": "not-an-email",
         "password": "password123",
@@ -315,10 +311,9 @@ def test_register_user_invalid_email(auth_client: TestClient):
 
 
 def test_register_user_short_password(auth_client: TestClient):
-    """Test registration with password shorter than 8 characters returns 422."""
     payload = {
         "email": "user@example.com",
-        "password": "short",  # Less than 8 characters
+        "password": "short",
         "telegram_chat_id": "chat-123",
     }
 
@@ -328,8 +323,6 @@ def test_register_user_short_password(auth_client: TestClient):
 
 
 def test_login_success(auth_client: TestClient, fake_user_service: FakeUserService):
-    """Test successful login returns access token."""
-    # Create a user first
     user = User(
         user_id="login-user-123",
         email="login@example.com",
@@ -339,11 +332,10 @@ def test_login_success(auth_client: TestClient, fake_user_service: FakeUserServi
     )
     fake_user_service.add_user(user)
 
-    # Login with correct credentials
     response = auth_client.post(
         "/api/v1/auth/login",
         data={
-            "username": "login@example.com",  # OAuth2PasswordRequestForm uses 'username' field
+            "username": "login@example.com",
             "password": "correctpass",
         },
     )
@@ -358,7 +350,6 @@ def test_login_success(auth_client: TestClient, fake_user_service: FakeUserServi
 
 
 def test_login_wrong_password(auth_client: TestClient, fake_user_service: FakeUserService):
-    """Test login with wrong password returns 401."""
     user = User(
         user_id="login-user-123",
         email="login@example.com",
@@ -381,7 +372,6 @@ def test_login_wrong_password(auth_client: TestClient, fake_user_service: FakeUs
 
 
 def test_login_nonexistent_user(auth_client: TestClient):
-    """Test login with non-existent email returns 401."""
     response = auth_client.post(
         "/api/v1/auth/login",
         data={
@@ -395,13 +385,12 @@ def test_login_nonexistent_user(auth_client: TestClient):
 
 
 def test_login_inactive_user(auth_client: TestClient, fake_user_service: FakeUserService):
-    """Test login with inactive user returns 401."""
     user = User(
         user_id="inactive-user-123",
         email="inactive@example.com",
         telegram_chat_id="chat-inactive",
         hashed_password="hashed_password123",
-        is_active=False,  # Inactive user
+        is_active=False,
     )
     fake_user_service.add_user(user)
 
@@ -415,4 +404,3 @@ def test_login_inactive_user(auth_client: TestClient, fake_user_service: FakeUse
 
     assert response.status_code == 401
     assert "Incorrect email or password" in response.json()["detail"]
-

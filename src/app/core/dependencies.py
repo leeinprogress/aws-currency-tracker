@@ -1,38 +1,27 @@
-"""
-FastAPI dependencies
-"""
 from typing import Optional
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 
-from app.db.repositories import (
-    AlertRepository,
-    UserRepository,
-    get_alert_repository,
-    get_user_repository,
-)
+from app.core.config import settings
+from app.domain.entities.user import User
+from app.domain.notification import NotificationService
+from app.domain.repositories import IUserRepository
+from app.infrastructure.notifications.telegram import TelegramNotificationService
+from app.infrastructure.persistence.repositories import get_user_repository
 from app.core.security import decode_access_token
-from app.db.models.user import User
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 
-def get_alert_repository_dependency() -> AlertRepository:
-    """FastAPI dependency for alert repository"""
-    return get_alert_repository()
-
-
-def get_user_repository_dependency() -> UserRepository:
-    """FastAPI dependency for user repository"""
-    return get_user_repository()
+def get_notification_service() -> NotificationService:
+    return TelegramNotificationService(token=settings.TELEGRAM_BOT_TOKEN)
 
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
-    user_repository: UserRepository = Depends(get_user_repository_dependency),
+    user_repository: IUserRepository = Depends(get_user_repository),
 ) -> User:
-    """Dependency to get current authenticated user"""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -47,7 +36,7 @@ async def get_current_user(
     if user_id is None:
         raise credentials_exception
     
-    user = await user_repository.get_user_by_id(user_id)
+    user = await user_repository.find_by_id(user_id)
     if user is None:
         raise credentials_exception
     
