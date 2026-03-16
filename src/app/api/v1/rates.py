@@ -150,8 +150,7 @@ async def get_rate_analysis(
     hist_asc = list(reversed(history))
     current_rate = hist_asc[-1].deal_bas_r if hist_asc else 0.0
 
-    # compute_features raises ScoringUnavailableError (503) or InsufficientDataError (422)
-    # if there is not enough data; these are handled by global exception handlers in main.py
+
     features = compute_features(
         currency=currency_code.upper(),
         history=hist_asc,

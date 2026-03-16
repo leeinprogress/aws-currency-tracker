@@ -14,9 +14,9 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: List[str] = ["*"]
 
     # DynamoDB
-    ALERTS_TABLE_NAME: str
-    USERS_TABLE_NAME: str
-    EXCHANGE_RATES_TABLE_NAME: str
+    ALERTS_TABLE_NAME: str  = "currency-alerts"
+    USERS_TABLE_NAME: str = "users"
+    EXCHANGE_RATES_TABLE_NAME: str = "exchange-rates"
     RATE_HISTORY_TABLE_NAME: str = "rate-history"
     NOTIFICATION_HISTORY_TABLE_NAME: str = "notification-history"
     AWS_REGION: str = "ap-northeast-2"
