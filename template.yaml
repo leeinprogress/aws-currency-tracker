@@ -2,51 +2,130 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: Currency Tracking and Alert System with Telegram Notifications
 
+# ============================================================
+# Parameters
+# ============================================================
 Parameters:
+  Environment:
+    Type: String
+    Description: Deployment environment
+    Default: development
+    AllowedValues: [development, production]
+
+  OpsEmail:
+    Type: String
+    Description: Email address for operational alerts (leave empty to skip SNS subscription)
+    Default: ''
+
+  SecretKey:
+    Type: String
+    Description: Secret key for JWT token signing
+    Default: '{{resolve:ssm:/currency-tracker/development/jwt-secret-key}}'
+    NoEcho: true
+
   TelegramBotToken:
     Type: String
     Description: Telegram Bot Token
+    Default: '{{resolve:ssm:/currency-tracker/development/telegram-bot-token}}'
     NoEcho: true
+
   KoreaEximAuthkey:
     Type: String
-    Description: KoreaExim Exchange Rate API authentication key (authkey)
+    Description: Korea Exim Bank API authentication key
+    Default: '{{resolve:ssm:/currency-tracker/development/koreaexim-authkey}}'
     NoEcho: true
-  ExchangeApiKey:
-    Type: String
-    Description: Exchange Rate API Key (legacy, optional)
-    Default: ''
-    NoEcho: true
-  SecretKey:
-    Type: String
-    Description: Secret key for JWT token signing (generate a strong random string)
-    NoEcho: true
-    Default: 'change-this-secret-key-in-production'
 
+  GoogleClientId:
+    Type: String
+    Description: Google OAuth 2.0 Client ID
+    Default: '{{resolve:ssm:/currency-tracker/development/google-client-id}}'
+    NoEcho: true
+
+  GoogleClientSecret:
+    Type: String
+    Description: Google OAuth 2.0 Client Secret
+    Default: '{{resolve:ssm:/currency-tracker/development/google-client-secret}}'
+    NoEcho: true
+
+  GoogleRedirectUri:
+    Type: String
+    Description: Google OAuth 2.0 Redirect URI
+    Default: ''
+
+# ============================================================
+# Mappings
+# ============================================================
+Mappings:
+  EnvShortName:
+    development:
+      Short: dev
+    production:
+      Short: prod
+
+# ============================================================
+# Conditions
+# ============================================================
+Conditions:
+  IsProd: !Equals [!Ref Environment, production]
+  HasOpsEmail: !Not [!Equals [!Ref OpsEmail, '']]
+
+# ============================================================
+# Globals
+# ============================================================
 Globals:
   Function:
     Timeout: 30
     Runtime: python3.12
     Environment:
       Variables:
-        ALERTS_TABLE_NAME: !Ref AlertsTable
-        EXCHANGE_RATES_TABLE_NAME: !Ref ExchangeRatesTable
-        RATE_HISTORY_TABLE_NAME: !Ref RateHistoryTable
-        EVENTBRIDGE_BUS: currency-events
+        ENVIRONMENT: !Ref Environment
+        ALERTS_TABLE_NAME: !Sub
+          - "${Short}-currency-alerts"
+          - Short: !FindInMap [EnvShortName, !Ref Environment, Short]
+        USERS_TABLE_NAME: !Sub
+          - "${Short}-users"
+          - Short: !FindInMap [EnvShortName, !Ref Environment, Short]
+        EXCHANGE_RATES_TABLE_NAME: !Sub
+          - "${Short}-exchange-rates"
+          - Short: !FindInMap [EnvShortName, !Ref Environment, Short]
+        RATE_HISTORY_TABLE_NAME: !Sub
+          - "${Short}-rate-history"
+          - Short: !FindInMap [EnvShortName, !Ref Environment, Short]
+        NOTIFICATION_HISTORY_TABLE_NAME: !Sub
+          - "${Short}-notification-history"
+          - Short: !FindInMap [EnvShortName, !Ref Environment, Short]
+        EVENTBRIDGE_BUS: !Sub
+          - "${Short}-currency-events"
+          - Short: !FindInMap [EnvShortName, !Ref Environment, Short]
         TELEGRAM_BOT_TOKEN: !Ref TelegramBotToken
         KOREAEXIM_AUTHKEY: !Ref KoreaEximAuthkey
-        EXCHANGE_API_KEY: !Ref ExchangeApiKey
-        EXCHANGE_API_URL: https://api.exchangerate-api.com/v4/latest/
-        USERS_TABLE_NAME: !Ref UsersTable
         SECRET_KEY: !Ref SecretKey
-        ACCESS_TOKEN_EXPIRE_MINUTES: 30
+        ACCESS_TOKEN_EXPIRE_MINUTES: '15'
+        REFRESH_TOKEN_EXPIRE_DAYS: '7'
+        ALLOWED_ORIGINS: 'http://localhost:3000'
+        GOOGLE_CLIENT_ID: !Ref GoogleClientId
+        GOOGLE_CLIENT_SECRET: !Ref GoogleClientSecret
+        GOOGLE_REDIRECT_URI: !Ref GoogleRedirectUri
 
+# ============================================================
+# Resources
+# ============================================================
 Resources:
-  # DynamoDB Table for storing alerts
+
+  # ----------------------------------------------------------
+  # DynamoDB Tables
+  # ----------------------------------------------------------
+
   AlertsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: currency-alerts
+      TableName: !Sub
+        - "${Short}-currency-alerts"
+        - Short: !FindInMap [EnvShortName, !Ref Environment, Short]
       BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: !If [IsProd, true, false]
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
       AttributeDefinitions:
         - AttributeName: alert_id
           AttributeType: S
@@ -72,8 +151,6 @@ Resources:
               KeyType: HASH
           Projection:
             ProjectionType: ALL
-        # Sparse index: only contains items where active_user_id exists (active alerts)
-        # Enables efficient queries for active alerts per user without scanning inactive ones
         - IndexName: active_user_id-index
           KeySchema:
             - AttributeName: active_user_id
@@ -81,16 +158,22 @@ Resources:
           Projection:
             ProjectionType: ALL
 
-  # DynamoDB Table for storing users
   UsersTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: users
+      TableName: !Sub
+        - "${Short}-users"
+        - Short: !FindInMap [EnvShortName, !Ref Environment, Short]
       BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: !If [IsProd, true, false]
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
       AttributeDefinitions:
         - AttributeName: user_id
           AttributeType: S
         - AttributeName: email
+          AttributeType: S
+        - AttributeName: google_id
           AttributeType: S
       KeySchema:
         - AttributeName: user_id
@@ -102,12 +185,23 @@ Resources:
               KeyType: HASH
           Projection:
             ProjectionType: ALL
+        - IndexName: google-index
+          KeySchema:
+            - AttributeName: google_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
 
   ExchangeRatesTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: exchange-rates
+      TableName: !Sub
+        - "${Short}-exchange-rates"
+        - Short: !FindInMap [EnvShortName, !Ref Environment, Short]
       BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: !If [IsProd, true, false]
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
       AttributeDefinitions:
         - AttributeName: currency_code
           AttributeType: S
@@ -118,12 +212,16 @@ Resources:
         AttributeName: ttl
         Enabled: true
 
-  # DynamoDB Table for storing rate history (time-series data)
   RateHistoryTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: rate-history
+      TableName: !Sub
+        - "${Short}-rate-history"
+        - Short: !FindInMap [EnvShortName, !Ref Environment, Short]
       BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: !If [IsProd, true, false]
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
       AttributeDefinitions:
         - AttributeName: currency_code
           AttributeType: S
@@ -134,9 +232,66 @@ Resources:
           KeyType: HASH
         - AttributeName: timestamp
           KeyType: RANGE
+
+  NotificationHistoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub
+        - "${Short}-notification-history"
+        - Short: !FindInMap [EnvShortName, !Ref Environment, Short]
+      BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: !If [IsProd, true, false]
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: currency
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: currency-index
+          KeySchema:
+            - AttributeName: currency
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
+
+  # ----------------------------------------------------------
+  # EventBridge
+  # ----------------------------------------------------------
+
+  CurrencyEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub
+        - "${Short}-currency-events"
+        - Short: !FindInMap [EnvShortName, !Ref Environment, Short]
+
+  # ----------------------------------------------------------
+  # SQS DLQ
+  # ----------------------------------------------------------
+
+  CheckAlertsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub
+        - "${Short}-check-alerts-dlq"
+        - Short: !FindInMap [EnvShortName, !Ref Environment, Short]
+      MessageRetentionPeriod: 1209600  # 14 days
+
+  # ----------------------------------------------------------
+  # Lambda Functions
+  # ----------------------------------------------------------
 
   # API Gateway + FastAPI Lambda
   CurrencyApi:
@@ -165,16 +320,19 @@ Resources:
             TableName: !Ref ExchangeRatesTable
         - DynamoDBReadPolicy:
             TableName: !Ref RateHistoryTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref NotificationHistoryTable
 
   # Lambda to fetch currency rates
   FetchRatesFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Description: Fetches daily exchange rates from Korea Exim Bank API.
       CodeUri: src/
       Handler: functions.fetch_rates.lambda_handler
       Policies:
-        - DynamoDBReadPolicy:
-            TableName: !Ref AlertsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ExchangeRatesTable
         - DynamoDBCrudPolicy:
             TableName: !Ref RateHistoryTable
         - EventBridgePutEventsPolicy:
@@ -183,43 +341,60 @@ Resources:
         ScheduledEvent:
           Type: Schedule
           Properties:
-            Schedule: cron(5 2 * * ? *)
+            Schedule: cron(0 2 * * ? *)  # 11AM KST = 02:00 UTC
             Enabled: true
-
-  # EventBridge Rule for rate updates
-  RateUpdateRule:
-    Type: AWS::Events::Rule
-    Properties:
-      EventBusName: !Ref CurrencyEventBus
-      EventPattern:
-        source:
-          - currency.tracker
-        detail-type:
-          - Rate Updated
-      Targets:
-        - Arn: !GetAtt CheckAlertsFunction.Arn
-          Id: CheckAlertsTarget
 
   # Lambda to check alerts and send notifications
   CheckAlertsFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Description: Checks active alerts against current rates and sends Telegram notifications.
       CodeUri: src/
       Handler: functions.check_alerts.lambda_handler
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref AlertsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref NotificationHistoryTable
         - DynamoDBReadPolicy:
-            TableName: !Ref RateHistoryTable
-      Events: {}  # EventBridge rule is defined separately above
+            TableName: !Ref UsersTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref ExchangeRatesTable
+      Events:
+        RateUpdated:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: !Ref CurrencyEventBus
+            Pattern:
+              source:
+                - currency.tracker
+              detail-type:
+                - Rate Updated
+            DeadLetterConfig:
+              Arn: !GetAtt CheckAlertsDLQ.Arn
+
+  # Lambda to log failed check_alerts events from DLQ
+  DLQHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Logs failed check_alerts events from DLQ to CloudWatch.
+      CodeUri: src/
+      Handler: functions.dlq_handler.lambda_handler
+      Events:
+        DLQTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt CheckAlertsDLQ.Arn
+            BatchSize: 1
 
   # Lambda to generate and send weekly reports
   WeeklyReportFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Description: Generates and sends weekly rate summary reports via Telegram.
       CodeUri: src/
       Handler: functions.weekly_report.lambda_handler
-      Timeout: 60  # Reports may take longer to generate
+      Timeout: 60
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref AlertsTable
@@ -229,30 +404,304 @@ Resources:
         WeeklySchedule:
           Type: Schedule
           Properties:
-            # Every Monday at 9 AM KST (00:00 UTC)
-            Schedule: cron(0 0 ? * MON *)
+            Schedule: cron(0 0 ? * MON *)  # Monday 9AM KST = 00:00 UTC
             Enabled: true
 
-  # EventBridge Custom Bus
-  CurrencyEventBus:
-    Type: AWS::Events::EventBus
-    Properties:
-      Name: currency-events
+  # ----------------------------------------------------------
+  # SNS Topic for Ops Alerts
+  # ----------------------------------------------------------
 
-  # Permission for EventBridge to invoke CheckAlertsFunction
-  CheckAlertsInvokePermission:
-    Type: AWS::Lambda::Permission
+  OpsSnsTopic:
+    Type: AWS::SNS::Topic
     Properties:
-      FunctionName: !Ref CheckAlertsFunction
-      Principal: events.amazonaws.com
-      Action: lambda:InvokeFunction
-      SourceArn: !GetAtt RateUpdateRule.Arn
+      TopicName: !Sub
+        - "${Short}-currency-ops-alerts"
+        - Short: !FindInMap [EnvShortName, !Ref Environment, Short]
+      Subscription:
+        - !If
+          - HasOpsEmail
+          - Protocol: email
+            Endpoint: !Ref OpsEmail
+          - !Ref AWS::NoValue
 
+  # ----------------------------------------------------------
+  # CloudWatch Alarms
+  # ----------------------------------------------------------
+
+  FetchRatesErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-FetchRates-Errors"
+      AlarmDescription: fetch_rates Lambda is producing errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref FetchRatesFunction
+      AlarmActions:
+        - !Ref OpsSnsTopic
+      OKActions:
+        - !Ref OpsSnsTopic
+
+  CheckAlertsErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-CheckAlerts-Errors"
+      AlarmDescription: check_alerts Lambda is producing errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref CheckAlertsFunction
+      AlarmActions:
+        - !Ref OpsSnsTopic
+      OKActions:
+        - !Ref OpsSnsTopic
+
+  WeeklyReportErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-WeeklyReport-Errors"
+      AlarmDescription: weekly_report Lambda is producing errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref WeeklyReportFunction
+      AlarmActions:
+        - !Ref OpsSnsTopic
+      OKActions:
+        - !Ref OpsSnsTopic
+
+  ApiServerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-ApiGateway-5xx"
+      AlarmDescription: API Gateway 5xx error rate exceeds 1%
+      MetricName: 5XXError
+      Namespace: AWS/ApiGateway
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0.01
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: ApiName
+          Value: !Sub "${AWS::StackName}"
+      AlarmActions:
+        - !Ref OpsSnsTopic
+      OKActions:
+        - !Ref OpsSnsTopic
+
+  FetchRatesDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-FetchRates-Duration"
+      AlarmDescription: fetch_rates Lambda p95 duration exceeds 10 seconds
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      ExtendedStatistic: p95
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 10000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref FetchRatesFunction
+      AlarmActions:
+        - !Ref OpsSnsTopic
+      OKActions:
+        - !Ref OpsSnsTopic
+
+  LambdaThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-Lambda-Throttles"
+      AlarmDescription: Lambda functions are being throttled
+      MetricName: Throttles
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OpsSnsTopic
+      OKActions:
+        - !Ref OpsSnsTopic
+
+  DLQDepthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-DLQ-MessageCount"
+      AlarmDescription: check_alerts events are failing and landing in DLQ
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt CheckAlertsDLQ.QueueName
+      AlarmActions:
+        - !Ref OpsSnsTopic
+      OKActions:
+        - !Ref OpsSnsTopic
+
+  # ----------------------------------------------------------
+  # CloudWatch Dashboard
+  # ----------------------------------------------------------
+
+  CurrencyTrackerDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub
+        - "${Short}-currency-tracker"
+        - Short: !FindInMap [EnvShortName, !Ref Environment, Short]
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "Lambda Invocations",
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${FetchRatesFunction}"],
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${CheckAlertsFunction}"],
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${WeeklyReportFunction}"],
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${CurrencyApi}"]
+                ],
+                "period": 86400,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "Lambda Errors",
+                "metrics": [
+                  ["AWS/Lambda", "Errors", "FunctionName", "${FetchRatesFunction}"],
+                  ["AWS/Lambda", "Errors", "FunctionName", "${CheckAlertsFunction}"],
+                  ["AWS/Lambda", "Errors", "FunctionName", "${WeeklyReportFunction}"],
+                  ["AWS/Lambda", "Errors", "FunctionName", "${CurrencyApi}"]
+                ],
+                "period": 86400,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "Lambda Duration (p95)",
+                "metrics": [
+                  ["AWS/Lambda", "Duration", "FunctionName", "${FetchRatesFunction}"],
+                  ["AWS/Lambda", "Duration", "FunctionName", "${CheckAlertsFunction}"],
+                  ["AWS/Lambda", "Duration", "FunctionName", "${CurrencyApi}"]
+                ],
+                "period": 86400,
+                "stat": "p95",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "DynamoDB Throttled Requests",
+                "metrics": [
+                  ["AWS/DynamoDB", "ThrottledRequests", "TableName", "${AlertsTable}"],
+                  ["AWS/DynamoDB", "ThrottledRequests", "TableName", "${UsersTable}"],
+                  ["AWS/DynamoDB", "ThrottledRequests", "TableName", "${ExchangeRatesTable}"],
+                  ["AWS/DynamoDB", "ThrottledRequests", "TableName", "${RateHistoryTable}"],
+                  ["AWS/DynamoDB", "ThrottledRequests", "TableName", "${NotificationHistoryTable}"]
+                ],
+                "period": 86400,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 12, "width": 12, "height": 6,
+              "properties": {
+                "title": "API Gateway 5xx Errors",
+                "metrics": [
+                  ["AWS/ApiGateway", "5XXError", "ApiName", "${AWS::StackName}"]
+                ],
+                "period": 86400,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 12, "width": 12, "height": 6,
+              "properties": {
+                "title": "DLQ Messages",
+                "metrics": [
+                  ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${CheckAlertsDLQ.QueueName}"]
+                ],
+                "period": 86400,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+# ============================================================
+# Outputs
+# ============================================================
 Outputs:
   ApiUrl:
     Description: API Gateway endpoint URL
     Value: !Sub 'https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/'
+
   AlertsTableName:
-    Description: DynamoDB Table name
+    Description: Alerts DynamoDB Table name
     Value: !Ref AlertsTable
 
+  UsersTableName:
+    Description: Users DynamoDB Table name
+    Value: !Ref UsersTable
+
+  NotificationHistoryTableName:
+    Description: Notification History DynamoDB Table name
+    Value: !Ref NotificationHistoryTable
+
+  DLQUrl:
+    Description: Check Alerts DLQ URL
+    Value: !Ref CheckAlertsDLQ
+
+  OpsTopicArn:
+    Description: SNS Topic ARN for ops alerts
+    Value: !Ref OpsSnsTopic
