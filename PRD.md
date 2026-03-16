@@ -1,253 +1,257 @@
-# PRD.md — Product Requirements Document
-## AWS Currency Tracker
+# Product Requirements Document
+## KRW Exchange Rate Tracker & Remittance Timing Assistant
 
-**Version:** 3.0
-**Updated:** 2026-03-02
+**Version:** 1.1
 **Status:** Final
+**Last Updated:** 2026-03-13
+**Author:** Lee Garam
 
 ---
 
-## 1. Overview
+## 1. Problem Statement
 
-### 1.1 Product Summary
+### The Pain
 
-AWS Currency Tracker is a **pure serverless** backend service that:
-- Monitors KRW exchange rates (USD, EUR, JPY, CNY vs KRW)
-- Sends Telegram alerts when user-defined target rates are hit
-- Provides a **Scoring + Guardrail engine** recommending optimal remittance timing
+Korean expats and overseas workers regularly send money back to Korea. The timing of that
+transfer can make a meaningful difference — a 1–2% swing in the USD/KRW rate on a $3,000
+remittance is $30–60. Over a year of monthly transfers, that adds up.
 
-### 1.2 Architecture Decision: Why Pure Serverless
+Yet most people transfer when it's convenient, not when the rate is favorable. They lack
+two things:
 
-The existing codebase already runs FastAPI on Lambda via Mangum + API Gateway. The workload
-profile — sporadic API traffic, lightweight compute, no persistent connections — is textbook
-Lambda territory. EC2 was considered to show "AWS breadth" but removed because:
+1. **Awareness** — they don't know whether today's rate is historically good or bad
+2. **Alerts** — they have no way to be notified when their target rate is hit
 
-- VPC subnetting, NAT Gateway, ALB, CodeDeploy complexity adds no business value here
-- "Why both Lambda and EC2?" has no satisfying answer when Lambda already works
-- Smaller stack = deeper understanding per service = stronger portfolio story
+Existing solutions (bank apps, Google Finance) show the current rate but offer no
+historical context, no timing guidance, and no alert system.
 
-### 1.3 Goals
+### Why This Matters Now
 
-| Goal | Description |
+The KRW has experienced elevated volatility since 2022. A user who transferred at the
+wrong week in 2024 paid 8–10% more than one who waited two weeks. For regular remittance
+users, this is a real, recurring financial cost.
+
+---
+
+## 2. Users
+
+### Primary — The Regular Remitter
+
+**Profile:** Korean national living abroad (US, Europe, Japan, Australia). Sends
+$1,000–$5,000 home monthly or quarterly. Uses a bank wire or remittance service.
+
+**Current behavior:**
+- Checks the rate on Google or a banking app
+- Has no reference for whether that rate is good or bad historically
+- Transfers when they remember to, not when the rate is optimal
+- Has missed favorable windows they didn't know about
+
+**What they need:**
+- A simple signal: "Is today a good day to transfer?"
+- An alert when the rate hits their personal target
+- Enough explanation to trust the signal
+
+### Secondary — The Technical Reviewer
+
+An engineer or hiring manager evaluating this as a portfolio project. They want to see
+evidence of production-level thinking: clean architecture, observable systems, security
+discipline, and domain understanding beyond CRUD.
+
+---
+
+## 3. Goals
+
+### User Goals
+
+| Goal | Metric | Target |
+|---|---|---|
+| User can set a rate alert | Alert creation success rate | 100% |
+| User receives notification when target rate is hit | Alert delivery rate within 5 min of rate fetch | ≥ 99% |
+| User understands whether today's rate is favorable | Scoring endpoint returns valid recommendation | 100% uptime |
+| User is not misled on volatile days | Guardrail override on high-vol days | Verified by test suite |
+
+### Product Goals
+
+| Goal | Metric |
 |---|---|
-| Portfolio | Demonstrate production-level AWS serverless engineering |
-| Domain Depth | Show Fintech understanding via rule-based scoring + guardrails |
-| AWS Depth | Go deep on Lambda, DynamoDB, EventBridge, SQS, CloudWatch, IAM |
-| Code Quality | Tested, documented, secure, maintainable |
-
-### 1.4 Out of Scope
-
-- Frontend / web dashboard
-- EC2, ALB, VPC, NAT Gateway, CodeDeploy
-- Monetization or billing
-- Real-time rate data
-- Backtest pipeline
-- Fee/commission auto-collection
-- Currency pairs beyond USD, EUR, JPY, CNY vs KRW
-- X-Ray tracing, CloudFront
+| Zero silent alert failures | DLQ message count = 0 in normal operation |
+| No secrets exposed | Zero plaintext secrets in codebase or git history |
+| Reliable daily rate ingestion | fetch_rates Lambda error rate < 1% |
 
 ---
 
-## 2. Target Users
+## 4. Solution Overview
 
-**Primary — Korean Expat / Remittance User**
-Koreans living abroad who regularly send money home and want to remit at the best rate.
-Interacts via Swagger UI or Postman.
+A pure serverless backend that does three things:
 
-**Secondary — Technical Reviewer**
-Engineers evaluating this as a portfolio piece. Looks for clean serverless architecture,
-domain understanding, and production-readiness.
+**1. Rate ingestion**
+A scheduled Lambda fetches daily KRW exchange rates (mid, buy, sell) from the Korea Exim
+Bank API every morning at 11AM KST and stores them with 90 days of history.
 
----
+**2. Alert system**
+Users register target rates. After each daily fetch, a second Lambda checks all active
+alerts against the new rate and sends a Telegram notification when conditions are met.
+A dead-letter queue captures any failures — no alert is ever silently dropped.
 
-## 3. Functional Requirements
+**3. Timing recommendations**
+A scoring engine computes a FAVORABLE / NEUTRAL / WAIT / CAUTION signal for each currency
+pair using statistical features (percentile rank, moving averages, volatility, spread).
+Hard guardrails override optimistic signals when market conditions are abnormal.
 
-### 3.1 Authentication
+### Why Serverless
 
-| ID | Requirement | Priority |
-|---|---|---|
-| AUTH-01 | Register with email + password | Must |
-| AUTH-02 | bcrypt password hashing | Must |
-| AUTH-03 | Login → JWT access (15min) + refresh token (7d) | Must |
-| AUTH-04 | POST /auth/refresh — new access token | Must |
-| AUTH-05 | POST /auth/logout — invalidate refresh token | Must |
-| AUTH-06 | Google OAuth 2.0 as optional login | Should |
-| AUTH-07 | Rate limiting: login 5/min, register 3/min | Must |
+The workload is sporadic: one scheduled fetch per day, occasional API calls from users.
+Lambda + API Gateway handles this at near-zero cost with no infrastructure to maintain.
+An always-on server would be wasteful and harder to justify architecturally.
 
-### 3.2 Alert Management
+### Why Telegram
 
-| ID | Requirement | Priority |
-|---|---|---|
-| ALERT-01 | Create alert: currency, direction, target rate | Must |
-| ALERT-02 | List / get / update / delete / toggle alerts | Must |
-| ALERT-03 | Reject duplicates (same user + currency + direction + target) | Must |
-| ALERT-04 | Idempotency-Key header on POST /alerts (5min DDB cache) | Must |
-| ALERT-05 | Optional label per alert | Nice |
-
-### 3.3 Exchange Rates
-
-| ID | Requirement | Priority |
-|---|---|---|
-| RATE-01 | Fetch daily rates (mid + buy + sell + spread) from Korea Exim Bank via Lambda | Must |
-| RATE-02 | Current rates endpoint | Must |
-| RATE-03 | 90-day history endpoint | Must |
-| RATE-04 | Statistical analysis endpoint: MA7/MA30, percentile, z-score, vol, spread_ratio | Must |
-| RATE-05 | Rate cache TTL 25h via DynamoDB | Must |
-
-### 3.4 Scoring + Guardrail Engine
-
-| ID | Requirement | Priority |
-|---|---|---|
-| SCORE-01 | Feature engineering: percentile, z_score, MA7/MA30, ma_slope, vol_ratio, spread_ratio | Must |
-| SCORE-02 | value_score (0–100): percentile. Higher rate = more KRW received = favorable (USD→KRW direction, no parameterization) | Must |
-| SCORE-03 | trend_score (0–100): MA slope + spot vs MA30 | Must |
-| SCORE-04 | risk_score (0–100): vol_ratio + spread_ratio | Must |
-| SCORE-05 | raw = (0.5 × value) + (0.3 × trend) − (0.4 × risk); final = (raw + 40) / 120 × 100 → normalized [0-100] | Must |
-| SCORE-06 | Label: FAVORABLE ≥70 / NEUTRAL 40–69 / WAIT <40 | Must |
-| SCORE-07 | Guardrail: vol_ratio > 1.5 → downgrade label one step | Must |
-| SCORE-08 | Guardrail: spread_ratio > 1.35 → −15 penalty | Must |
-| SCORE-09 | Guardrail: risk_score > 80 → force CAUTION | Must |
-| SCORE-10 | confidence: HIGH / MEDIUM / LOW (inverse of risk_score) | Must |
-| SCORE-11 | explanations: 2–4 English sentences justifying score | Must |
-| SCORE-12 | GET /recommendations/{currency} | Must |
-| SCORE-13 | Guardrails run before final score and override regardless of signals | Must |
-| SCORE-14 | Data guards: 0 records→503, <7 records→422, 7-29 records→proceed with confidence=LOW + data_warning, stale>2d→data_warning | Must |
-| SCORE-15 | rate_unit field in response: "per 100 JPY" for JPY, "per 1 unit" for USD/EUR/CNY | Must |
-| SCORE-16 | /rates/{currency}/analysis reuses compute_features() from scoring/features.py — single implementation | Must |
-
-### 3.5 Notifications + Reliability
-
-| ID | Requirement | Priority |
-|---|---|---|
-| NOTIFY-01 | EventBridge → check_alerts after fetch_rates | Must |
-| NOTIFY-02 | Telegram notification on alert condition match | Must |
-| NOTIFY-03 | Write to notification-history table after each send | Must |
-| NOTIFY-04 | NotificationService ABC (Telegram is only implementation) | Must |
-| NOTIFY-05 | SQS DLQ on check_alerts — no silent failures | Must |
-| NOTIFY-06 | dlq_handler Lambda logs failed payloads to CloudWatch | Must |
-
-### 3.6 User Profile
-
-| ID | Requirement | Priority |
-|---|---|---|
-| USER-01 | GET /users/me | Must |
-| USER-02 | PUT /users/me — update telegram_chat_id | Must |
-| USER-03 | DELETE /users/me — cascade to all alerts | Must |
-
-### 3.7 Documentation
-
-| ID | Requirement | Priority |
-|---|---|---|
-| DOC-01 | All endpoints under /api/v1/ | Must |
-| DOC-02 | Swagger UI at /docs, ReDoc at /redoc | Must |
-| DOC-03 | GET /health → 200 with status/env/version | Must |
-| DOC-04 | SLO.md with error budget | Must |
-| DOC-05 | DOCS/scoring-engine.md | Must |
+Korean expats already use Telegram widely. The Telegram Bot API is free, works
+internationally without SMS fees, and delivers instantly. Email is too easy to miss;
+SMS adds cost and setup friction.
 
 ---
 
-## 4. Non-Functional Requirements
+## 5. User Stories
 
-### 4.1 Security
+### Authentication
+- As a new user, I want to register with my email and password so I can create a personal account.
+- As a returning user, I want to stay logged in without re-entering my password every session.
+- As a Google user, I want to sign in with my Google account so I don't need another password.
 
-| ID | Requirement |
+### Alerts
+- As a user, I want to set a target rate for USD/KRW so I'm notified when the rate hits my goal.
+- As a user, I want to receive a Telegram message when my target rate is hit so I can act immediately.
+- As a user, I want to toggle an alert on or off without deleting it so I can pause it when needed.
+- As a user, I want to see my notification history so I know which alerts fired and when.
+
+### Rate Information
+- As a user, I want to see the current USD/KRW rate so I know where the market is today.
+- As a user, I want to see 90 days of rate history so I can judge whether today is high or low.
+
+### Recommendations
+- As a user, I want a simple FAVORABLE / NEUTRAL / WAIT signal so I don't have to interpret charts.
+- As a user, I want a short explanation of why the signal is what it is so I can decide whether to trust it.
+- As a user, I want the signal to warn me (CAUTION) when market conditions are abnormal so I'm not misled on volatile days.
+
+---
+
+## 6. Functional Requirements
+
+### Must Have
+
+| Area | Requirement |
 |---|---|
-| SEC-01 | API Gateway enforces HTTPS — no plaintext |
-| SEC-02 | bcrypt for passwords, never logged |
-| SEC-03 | JWT refresh token stored as bcrypt hash in DDB |
-| SEC-04 | All secrets in SSM Parameter Store |
-| SEC-05 | CORS restricted — no wildcard in prod |
-| SEC-06 | Pydantic validation on all inputs |
-| SEC-07 | Errors never expose stack traces |
-| SEC-08 | Idempotency-Key on POST /alerts |
+| Auth | Email/password registration and login with bcrypt password hashing |
+| Auth | JWT sessions with short-lived access tokens (15 min) and long-lived refresh tokens (7-day expiry) |
+| Auth | Rate limiting on login and registration to prevent abuse |
+| Alerts | Create, read, update, delete, and toggle per-user alerts |
+| Alerts | Idempotent alert creation — duplicate submissions return the same result |
+| Rates | Daily ingestion for USD, EUR, JPY, CNY vs KRW (mid + buy/sell + spread) |
+| Rates | 90-day rate history queryable per currency |
+| Rates | Statistical snapshot per currency: moving averages, percentile, z-score, volatility, spread ratio |
+| Recommendations | Per-currency signal: FAVORABLE / NEUTRAL / WAIT / CAUTION |
+| Recommendations | Score breakdown with 2–4 sentence explanation in plain English |
+| Recommendations | Guardrails that override optimistic signals on high-volatility or wide-spread days |
+| Recommendations | Data quality guards — refuse to score when history is too thin or stale |
+| Notifications | Telegram notification within 5 minutes of daily rate fetch |
+| Notifications | Notification history queryable by user |
+| Notifications | Dead-letter queue captures all failed notification attempts — zero silent drops |
+| Notifications | Weekly Telegram summary: 7-day rate movements and alert history |
+| Users | View and update profile (Telegram chat ID) |
+| Users | Account deletion cascades to all associated data |
 
-### 4.2 Reliability
+### Should Have
 
-| ID | Requirement |
+| Area | Requirement |
 |---|---|
-| REL-01 | SQS DLQ on check_alerts — zero silent alert drops |
-| REL-02 | dlq_handler logs all DLQ events to CloudWatch |
-| REL-03 | DynamoDB PITR on all 5 tables |
-| REL-04 | DynamoDB DeletionProtection in prod |
+| Auth | Google OAuth as an alternative login method |
 
-### 4.3 Observability
+### Nice to Have
 
-| ID | Requirement |
+| Area | Requirement |
 |---|---|
-| OBS-01 | Structured JSON logs via structlog → CloudWatch |
-| OBS-02 | Alarm: Lambda errors > 0 / 5min → SNS |
-| OBS-03 | Alarm: Lambda p95 duration > 10s → SNS |
-| OBS-04 | Alarm: DynamoDB throttled requests > 0 → SNS |
-| OBS-05 | Alarm: API Gateway 5xx rate > 1% / 5min → SNS |
-| OBS-06 | Alarm: DLQ message count > 0 → SNS |
-| OBS-07 | CloudWatch Dashboard: Lambda + DynamoDB + API GW + DLQ |
-| OBS-08 | SLO.md: 99% alert delivery within 5min, error budget defined |
-
-### 4.4 IAM (Least Privilege per Lambda)
-
-| Lambda | Allowed |
-|---|---|
-| FastAPI | DynamoDB CRUD (all 5 tables) + SSM read |
-| fetch_rates | DynamoDB CRUD (exchange-rates + rate-history) + SSM read |
-| check_alerts | DynamoDB CRUD (alerts + users + notification-history + exchange-rates) + SSM read |
-| dlq_handler | CloudWatch Logs write only |
+| Alerts | Optional user-defined label per alert (e.g. "rent", "savings") |
 
 ---
 
-## 5. AWS Services
+## 7. Non-Functional Requirements
 
-| Service | Purpose | Demonstrates |
-|---|---|---|
-| Lambda (×4) | FastAPI + fetch_rates + check_alerts + dlq_handler | Serverless compute |
-| API Gateway | HTTPS entry point + Lambda proxy | Serverless API |
-| DynamoDB | All persistence (5 tables) | NoSQL, GSI, TTL, PITR |
-| SQS | DLQ for check_alerts | Reliability design |
-| EventBridge | Scheduling + event fan-out | Event-driven architecture |
-| CloudWatch | Logs + Alarms + Dashboard | Observability |
-| SSM Parameter Store | Secrets | Secure config |
-| IAM | Per-Lambda least-privilege | Security |
-| SNS | Alarm → email | Pub/sub |
-| Route 53 | Custom domain DNS | Domain routing |
-| ACM | TLS cert (API Gateway custom domain) | HTTPS |
-| GitHub Actions | CI/CD via sam deploy | Automation |
+### Reliability
 
----
+| Requirement | Target |
+|---|---|
+| Alert delivery after rate fetch | ≥ 99% within 5 minutes |
+| API availability | ≥ 99.5% over any 30-day window |
+| Failed alert processing | Zero silent drops — all failures land in DLQ |
+| Data durability (production) | Point-in-time recovery enabled on all tables |
 
-## 6. Data Flow
+### Security
 
-```
-EventBridge Schedule (11AM KST daily)
-    → fetch_rates Lambda
-        → Korea Exim Bank API (mid + buy/sell + spread)
-        → DynamoDB: exchange-rates (TTL 25h) + rate-history
-        → EventBridge: publish "RatesFetched" event
+| Requirement |
+|---|
+| Passwords hashed with bcrypt — never stored or logged in plaintext |
+| JWT refresh tokens stored as bcrypt hash in database |
+| All secrets stored in AWS SSM Parameter Store as SecureString |
+| Zero secrets in source code or git history |
+| HTTPS enforced — no plaintext HTTP |
+| CORS locked to explicit allowed origins in production |
+| Input validation on all endpoints |
+| Error responses never expose internal details or stack traces |
 
-EventBridge Rule ("RatesFetched")
-    → check_alerts Lambda
-        → DynamoDB: read active alerts (sparse GSI)
-        → Compare each alert vs current rate
-        → Match: TelegramNotificationService.send()
-        → Write notification-history record
-        → Failure: → SQS DLQ → dlq_handler → CloudWatch log
+### Observability
 
-Client → API Gateway → FastAPI Lambda
-    → GET /recommendations/USD
-        → Load rate-history (90d) from DDB
-        → features.py → signals.py → guardrails.py → scorer.py → explainer.py
-        → Return JSON with label, score, confidence, explanations
-```
+| Requirement |
+|---|
+| Structured JSON logs for all Lambda functions |
+| Alarms on Lambda errors, slow execution, DLQ depth, and API 5xx rate |
+| Operational alerts routed to email via SNS |
+| Recovery notification when an alarm returns to OK state |
+
+### Cost Awareness
+
+| Decision | Reason |
+|---|---|
+| DynamoDB PITR disabled in development | Per-table monthly charge; dev data has no recovery value |
+| DeletionProtection disabled in development | Allows fast teardown during development |
+| Serverless compute | Pay only for actual invocations — zero idle cost |
 
 ---
 
-## 7. Success Criteria
+## 8. Out of Scope
 
-1. All endpoints live on HTTPS custom domain
-2. Swagger UI publicly accessible, fully documented
-3. Full end-to-end: register → create alert → fetch triggered → Telegram received
-4. GET /recommendations returns valid scored result with explanations
-5. DLQ verified: force failure → event captured → dlq_handler logs it
-6. All 4 CloudWatch alarms + DLQ alarm active and tested
-7. All secrets in SSM — zero in codebase
-8. SLO.md complete with error budget
-9. Architecture diagram accurate in README
-10. All tests pass: `pytest -v`
+| Item | Reason |
+|---|---|
+| Frontend / web UI | Backend-only; Swagger UI and Postman serve as the interface |
+| Additional currency pairs | Korea Exim Bank API supports only the four covered pairs for KRW |
+| Real-time rate data | Source API publishes once per business day |
+| Fee and commission modeling | Remittance provider fees vary and are not in the rate data |
+| Backtest / historical simulation | Separate analytical concern; not part of the alert workflow |
+| Multi-currency portfolio tracking | Out of scope for the remittance use case |
+
+---
+
+## 9. Constraints
+
+**Data cadence:** Korea Exim Bank API publishes once per business day. The product is
+daily-cadence by design — intraday signals are not possible with this data source.
+
+**Scoring direction:** The engine assumes the user is *receiving* KRW (sending foreign
+currency to Korea). A higher USD/KRW rate means more KRW per dollar — favorable.
+Users sending KRW abroad have the opposite preference; this case is not handled.
+Direction is fixed for this version.
+
+**JPY quoting convention:** JPY rates are quoted per 100 JPY, not per 1 unit.
+This is surfaced explicitly in API responses via a `rate_unit` field to prevent
+user confusion.
+
+---
+
+## 10. Open Questions
+
+| Question | Decision |
+|---|---|
+| Scoring explanations in Korean as well as English? | Deferred — English only for now |
+| Should users be able to configure remittance direction (receive vs send KRW)? | Deferred — receive-only for this version |
+| When Korea Exim Bank API is down, suppress scoring or warn and continue? | Decided: stale > 2 days → include `data_warning` in response, scoring continues |
+| Should weekly reports be opt-in per user? | Deferred |
