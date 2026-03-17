@@ -7,8 +7,10 @@ on:
     branches: ["main", "release"]
 
 jobs:
-  build:
-    if: github.event.workflow_run.conclusion == 'success'
+  deploy-dev:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,31 +23,6 @@ jobs:
       - name: Install SAM CLI
         run: pip install aws-sam-cli
 
-      - name: SAM build
-        run: sam build
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sam-build
-          path: .aws-sam/
-
-  deploy-dev:
-    if: github.event.workflow_run.head_branch == 'main'
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: sam-build
-          path: .aws-sam/
-
-      - name: Install SAM CLI
-        run: pip install aws-sam-cli
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -53,8 +30,9 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-northeast-2
 
-      - name: Deploy to development
+      - name: SAM build and deploy
         run: |
+          sam build
           sam deploy \
             --stack-name currency-tracker-dev \
             --parameter-overrides \
@@ -64,18 +42,18 @@ jobs:
             --no-fail-on-empty-changeset
 
   deploy-prod:
-    if: github.event.workflow_run.head_branch == 'release'
-    needs: build
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'release'
     runs-on: ubuntu-latest
     environment: production
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          name: sam-build
-          path: .aws-sam/
+          python-version: "3.12"
 
       - name: Install SAM CLI
         run: pip install aws-sam-cli
@@ -87,8 +65,9 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-northeast-2
 
-      - name: Deploy to production
+      - name: SAM build and deploy
         run: |
+          sam build
           sam deploy \
             --stack-name currency-tracker-prod \
             --parameter-overrides \
