@@ -1,13 +1,15 @@
 name: CD
 
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: ["main", "release"]
 
 jobs:
-  deploy:
+  build:
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -16,6 +18,34 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install SAM CLI
+        run: pip install aws-sam-cli
+
+      - name: SAM build
+        run: sam build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sam-build
+          path: .aws-sam/
+
+  deploy-dev:
+    if: github.event.workflow_run.head_branch == 'main'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sam-build
+          path: .aws-sam/
+
+      - name: Install SAM CLI
+        run: pip install aws-sam-cli
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -23,14 +53,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-northeast-2
 
-      - name: Install SAM CLI
-        run: pip install aws-sam-cli
-
-      - name: SAM build
-        run: sam build
-
       - name: Deploy to development
-        if: github.ref == 'refs/heads/main'
         run: |
           sam deploy \
             --stack-name currency-tracker-dev \
@@ -40,9 +63,31 @@ jobs:
             --no-confirm-changeset \
             --no-fail-on-empty-changeset
 
+  deploy-prod:
+    if: github.event.workflow_run.head_branch == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sam-build
+          path: .aws-sam/
+
+      - name: Install SAM CLI
+        run: pip install aws-sam-cli
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
       - name: Deploy to production
-        if: github.ref == 'refs/heads/release'
-        environment: production
         run: |
           sam deploy \
             --stack-name currency-tracker-prod \
